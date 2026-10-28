@@ -303,3 +303,35 @@ func TestAgeDirReadsAgeKeygenStyleIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRemoveDeletesWithoutTrashOrUnlock(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	a := newAgeDir(t, &calls)
+	a.Write(ctx, "GONE", "v1")
+	a.Write(ctx, "STAYS", "v2")
+	if err := a.Remove(ctx, []string{"GONE", "ABSENT"}); err != nil {
+		t.Fatal(err)
+	}
+	names, _ := a.Names()
+	if strings.Join(names, ",") != "STAYS" || calls != 0 {
+		t.Fatalf("names %v, passphrase asked %d times", names, calls)
+	}
+	if _, err := os.Stat(filepath.Join(a.dir, ".trash")); err == nil {
+		t.Fatal("trash made")
+	}
+
+	s, dir := newSops(t)
+	s.Write(ctx, "GONE", "v1")
+	s.Write(ctx, "STAYS", "v2")
+	if err := s.Remove(ctx, []string{"GONE", "ABSENT"}); err != nil {
+		t.Fatal(err)
+	}
+	names, _ = s.Names()
+	if strings.Join(names, ",") != "STAYS" {
+		t.Fatalf("names %v", names)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sops.trash.env")); err == nil {
+		t.Fatal("trash made")
+	}
+}

@@ -24,10 +24,18 @@ import (
 	"github.com/frederikb96/tandemvault/internal/vault"
 )
 
-// Keep values for Unlink: the side that keeps the entry.
+// Values of Unlink.
 const (
+	// KeepOnePassword ends the mapping and moves the vault entries to the vault's trash.
 	KeepOnePassword = "op"
-	KeepVault       = "vault"
+	// KeepVault ends the mapping and moves the 1Password item to Recently Deleted.
+	KeepVault = "vault"
+	// Return writes vault changes back to 1Password, checks that 1Password
+	// holds the vault's values, then deletes the vault entries and ends the mapping.
+	Return = "return"
+	// Retire does what Return does, then also moves the 1Password item to
+	// Recently Deleted.
+	Retire = "retire"
 )
 
 // Mapping links one 1Password item to a group of vault entries.
@@ -54,8 +62,10 @@ type Mapping struct {
 	Passkey *bool `yaml:"passkey,omitempty"`
 	// Create asks the next sync to create the 1Password item from the vault entries.
 	Create bool `yaml:"create,omitempty"`
-	// Unlink asks the next sync to end this mapping, keeping the entry on
-	// one side ("op" or "vault") and moving the other side's copy to its trash.
+	// Lease marks entries that are in the vault only for a while: pulled
+	// from 1Password for one job, returned with `tandemvault return`.
+	Lease bool `yaml:"lease,omitempty"`
+	// Unlink asks the next sync to end this mapping (see the constants above).
 	Unlink string `yaml:"unlink,omitempty"`
 }
 
@@ -224,9 +234,12 @@ func (f *File) Validate(c *config.Config) error {
 			bad("op_vault is required once the item is known")
 		}
 		switch m.Unlink {
-		case "", KeepOnePassword, KeepVault:
+		case "", KeepOnePassword, KeepVault, Return, Retire:
 		default:
-			bad("unlink must be %q or %q", KeepOnePassword, KeepVault)
+			bad("unlink must be %q, %q, %q or %q", KeepOnePassword, KeepVault, Return, Retire)
+		}
+		if (m.Unlink == Return || m.Unlink == Retire) && !m.Resolved() {
+			bad("unlink: %s needs a linked 1Password item", m.Unlink)
 		}
 		if m.OpVault != "" && !onepassword.IsID(m.OpVault) {
 			bad("op_vault %q is not a 1Password vault ID (tandemvault vaults lists them)", m.OpVault)

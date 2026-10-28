@@ -69,6 +69,8 @@ type Candidate struct {
 	VaultID    string
 	VaultTitle string
 	Title      string
+	// Match says how the candidate matched (one of the Match constants).
+	Match string
 }
 
 // ErrVersionMismatch means the item changed since it was read.
@@ -81,9 +83,8 @@ type Backend interface {
 	Get(ctx context.Context, vaultID, itemID string) (Item, error)
 	// Vaults lists the vaults the account can see.
 	Vaults(ctx context.Context) ([]VaultInfo, error)
-	// Find looks an item up by ID or exact title, optionally inside one vault
-	// (by ID). Title matching falls back to case-insensitive when no exact
-	// match exists.
+	// Find looks an item up by ID or title, optionally inside one vault (by
+	// ID), with the tiers of MatchCandidates.
 	Find(ctx context.Context, query, vault string) ([]Candidate, error)
 	// Update writes the given fields and nothing else. It fails with
 	// ErrVersionMismatch when the item's version is not expectVersion.

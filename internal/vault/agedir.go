@@ -240,6 +240,18 @@ func (a *AgeDir) Trash(ctx context.Context, names []string, stamp string) error 
 	return nil
 }
 
+func (a *AgeDir) Remove(_ context.Context, names []string) error {
+	for _, n := range names {
+		if err := ValidName(n); err != nil {
+			return err
+		}
+		if err := os.Remove(a.file(n)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *AgeDir) ConflictCopies() ([]string, error) {
 	var found []string
 	entries, err := os.ReadDir(a.dir)

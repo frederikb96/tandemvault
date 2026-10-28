@@ -106,6 +106,7 @@ printf '%s' "$value" | tandemvault vault set --vault open API_TOKEN   # value on
 tandemvault vault run --vault open API_TOKEN -- ./deploy.sh           # API_TOKEN in deploy.sh's environment only
 tandemvault vault get --vault open API_TOKEN | some-tool --token-stdin
 tandemvault vault unset --vault open API_TOKEN                        # moves it to the vault's trash
+tandemvault vault verify --vault open API_TOKEN < value-file          # "match" or "differs", never the value
 ```
 
 `vault get` refuses to print to a terminal unless you pass `--reveal`. Reading from the sealed vault asks for its passphrase once per process.
@@ -117,10 +118,11 @@ The two vaults map onto how much you want an agent to reach:
 - Put what an agent may use on its own into the **open vault**. It reads a value by naming it (`vault run NAME -- cmd`), so nothing is in its environment by default.
 - Put what needs you into the **sealed vault**. An agent can add entries there, for example a password it just set on a new account, but reading back needs the passphrase. How the passphrase is provided is up to you: `op://` makes every unlock a 1Password approval, `command:` hands it to your own tool, `prompt` asks on the terminal.
 - An agent never runs `sync`. It edits a vault or `mappings.yaml`, checks `tandemvault status --local` (exit code 1 means a sync is pending), and tells you to run the sync.
+- For a 1Password login an agent needs only for one job, it requests a lease (`link --lease`), you sync, it does the job, it runs `tandemvault return`, and you sync once more if it changed anything. The vault copy is gone afterwards; see [Using an item for a while](docs/sync.md#using-an-item-for-a-while).
 
 ## How syncing works
 
-Which way a value moves, what happens on a conflict, how links, new items and breaking a sync work: [docs/sync.md](docs/sync.md).
+Which way a value moves, what happens on a conflict, how links, leases, new items and breaking a sync work: [docs/sync.md](docs/sync.md).
 
 The vault formats, their files and how to set them up by hand or share them with other tools: [docs/vaults.md](docs/vaults.md).
 

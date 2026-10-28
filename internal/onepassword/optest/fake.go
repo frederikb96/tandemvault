@@ -30,6 +30,9 @@ type Fake struct {
 	// BeforeUpdate runs at the start of every Update; tests use it to
 	// simulate a concurrent edit.
 	BeforeUpdate func(itemID string)
+	// DropWrites makes Update bump the version without storing the values,
+	// to simulate a write that did not land.
+	DropWrites bool
 }
 
 // FakeItem is the stored item.
@@ -173,28 +176,15 @@ func (f *Fake) Find(_ context.Context, query, vault string) ([]onepassword.Candi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "find "+query)
-	var byID, exact []onepassword.Candidate
+	var all []onepassword.Candidate
 	for _, it := range f.items {
-		if it.Deleted {
+		if it.Deleted || (vault != "" && vault != it.VaultID) {
 			continue
 		}
-		vt := f.vaults[it.VaultID]
-		if vault != "" && vault != it.VaultID {
-			continue
-		}
-		c := onepassword.Candidate{ID: it.ID, VaultID: it.VaultID, VaultTitle: vt, Title: it.Title}
-		switch {
-		case it.ID == query:
-			byID = append(byID, c)
-		case it.Title == query:
-			exact = append(exact, c)
-		}
+		all = append(all, onepassword.Candidate{ID: it.ID, VaultID: it.VaultID, VaultTitle: f.vaults[it.VaultID], Title: it.Title})
 	}
-	if len(byID) > 0 {
-		return byID, nil
-	}
-	sort.Slice(exact, func(i, j int) bool { return exact[i].ID < exact[j].ID })
-	return exact, nil
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	return onepassword.MatchCandidates(all, query), nil
 }
 
 func (f *Fake) Update(_ context.Context, vaultID, itemID string, expectVersion uint64, set map[onepassword.Field]string) (onepassword.Item, error) {
@@ -210,6 +200,9 @@ func (f *Fake) Update(_ context.Context, vaultID, itemID string, expectVersion u
 	}
 	if it.Version != expectVersion {
 		return onepassword.Item{}, onepassword.ErrVersionMismatch
+	}
+	if f.DropWrites {
+		set = nil
 	}
 	f.write(it, set)
 	return f.snapshot(it), nil

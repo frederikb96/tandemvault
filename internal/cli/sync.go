@@ -196,6 +196,9 @@ func (a *App) cmdStatus(ctx context.Context, args []string) (int, error) {
 			}
 		}
 	}
+	if leases := e.Leases(); len(leases) > 0 && !*quiet {
+		fmt.Fprintln(a.Stdout, "Leased, give back with tandemvault return when done: "+strings.Join(leases, ", "))
+	}
 	if len(pending) > 0 {
 		return exitPending, nil
 	}

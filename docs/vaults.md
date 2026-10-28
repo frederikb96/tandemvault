@@ -71,7 +71,7 @@ Removing an entry (`vault unset`, `unlink --keep op`, or a conflict the vault lo
 - open vault: into a second sops file beside it, `.trash` before the extension (`open.env` → `open.trash.env`), as `<NAME>__<UTC time>`.
 - sealed vault: into `<dir>/.trash/<UTC time>/<NAME>.age`.
 
-Emptying the trash is up to you.
+Emptying the trash is up to you. Entries deleted by a return or a retire ([sync.md](sync.md#using-an-item-for-a-while)) get no trash copy: 1Password was checked to hold them first.
 
 ## Syncing vaults between machines
 

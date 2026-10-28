@@ -50,6 +50,9 @@ type Vault interface {
 	Write(ctx context.Context, name, value string) error
 	// Trash moves entries out of the vault into its trash, stamped with a UTC time.
 	Trash(ctx context.Context, names []string, stamp string) error
+	// Remove deletes entries without a trash copy and without unlocking. Only
+	// the sync engine calls it, for entries whose values 1Password holds.
+	Remove(ctx context.Context, names []string) error
 	// ConflictCopies lists file-sync conflict copies of the vault's files.
 	ConflictCopies() ([]string, error)
 	// Init creates an empty vault.

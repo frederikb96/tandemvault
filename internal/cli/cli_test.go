@@ -260,3 +260,101 @@ func TestParseInterspersed(t *testing.T) {
 		t.Fatalf("vault %q reveal %v pos %v", *v, *r, pos)
 	}
 }
+
+func TestLeaseWorkflowTwoSyncs(t *testing.T) {
+	e := newEnv(t)
+	id := e.op.Add("Private", "www.example-shop.com", map[onepassword.Field]string{onepassword.Username: "me-" + mark, onepassword.Password: "old-" + mark})
+	if code, _ := e.run("", "link", "--lease", "--vault", "sealed", "--prefix", "SHOP", "--fields", "username,password", "example-shop"); code != 0 {
+		t.Fatalf("link: %s", e.out.String())
+	}
+	// Sync 1: pull.
+	if code, _ := e.run("y\n", "sync"); code != exitOK {
+		t.Fatalf("sync 1: %s", e.out.String())
+	}
+	e.out.Reset()
+	e.run("", "status", "--local")
+	if !strings.Contains(e.out.String(), "Leased, give back with tandemvault return when done: sealed/SHOP") {
+		t.Fatalf("status: %s", e.out.String())
+	}
+	// Rotate in the vault, then return: a sync is needed.
+	e.run("new-"+mark, "vault", "set", "--vault", "sealed", "SHOP_PASSWORD")
+	e.out.Reset()
+	if code, _ := e.run("", "return", "SHOP"); code != exitPending || !strings.Contains(e.out.String(), "Marked sealed/SHOP to return") {
+		t.Fatalf("return: %d %s", code, e.out.String())
+	}
+	// Sync 2: write back, check, delete.
+	if code, _ := e.run("y\n", "sync"); code != exitOK {
+		t.Fatalf("sync 2: %s", e.out.String())
+	}
+	if e.op.Item(id).Values[onepassword.Password] != "new-"+mark {
+		t.Fatal("not written back")
+	}
+	e.out.Reset()
+	e.run("", "vault", "names", "--vault", "sealed")
+	if strings.Contains(e.out.String(), "SHOP_") {
+		t.Fatalf("vault copy left: %s", e.out.String())
+	}
+	if code, _ := e.run("", "status", "--local"); code != exitOK {
+		t.Fatalf("status after return: %s", e.out.String())
+	}
+}
+
+func TestReturnUnchangedIsImmediate(t *testing.T) {
+	e := newEnv(t)
+	e.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Password: "pw-" + mark})
+	e.run("", "link", "--lease", "--vault", "open", "--prefix", "SHOP", "--fields", "password", "Shop")
+	e.run("y\n", "sync")
+	e.op.Calls = nil
+	e.out.Reset()
+	if code, _ := e.run("", "return", "SHOP"); code != exitOK || !strings.Contains(e.out.String(), "Returned open/SHOP") {
+		t.Fatalf("return: %d %s", code, e.out.String())
+	}
+	if len(e.op.Calls) != 0 {
+		t.Fatal("1Password reached for an unchanged return")
+	}
+	e.out.Reset()
+	e.run("", "vault", "names", "--vault", "open")
+	if strings.Contains(e.out.String(), "SHOP_PASSWORD") {
+		t.Fatal("vault copy left")
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "open.trash.env")); err == nil {
+		t.Fatal("trash copy made")
+	}
+}
+
+func TestUnlinkKeepNoneRetires(t *testing.T) {
+	e := newEnv(t)
+	id := e.op.Add("Private", "Old", map[onepassword.Field]string{onepassword.Password: "pw-" + mark})
+	if code, _ := e.run("", "unlink", "--keep", "none", "NOPE"); code == 0 {
+		t.Fatal("unknown prefix accepted")
+	}
+	e.run("", "link", "--vault", "sealed", "--prefix", "OLD", "--fields", "password", "Old")
+	e.run("y\n", "sync")
+	if code, _ := e.run("", "unlink", "--keep", "none", "OLD"); code != 0 {
+		t.Fatalf("unlink: %s", e.out.String())
+	}
+	if code, _ := e.run("y\n", "sync"); code != exitOK {
+		t.Fatalf("sync: %s", e.out.String())
+	}
+	if !e.op.Item(id).Deleted {
+		t.Fatal("item not retired")
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "sealed", "OLD_PASSWORD.age")); err == nil {
+		t.Fatal("vault copy left")
+	}
+}
+
+func TestVaultVerify(t *testing.T) {
+	e := newEnv(t)
+	for _, v := range []string{"open", "sealed"} {
+		e.run("value-"+mark, "vault", "set", "--vault", v, "X")
+		e.out.Reset()
+		if code, _ := e.run("value-"+mark+"\n", "vault", "verify", "--vault", v, "X"); code != exitOK || e.out.String() != "match\n" {
+			t.Fatalf("%s match: %d %q", v, code, e.out.String())
+		}
+		e.out.Reset()
+		if code, _ := e.run("other-"+mark, "vault", "verify", "--vault", v, "X"); code != exitPending || e.out.String() != "differs\n" {
+			t.Fatalf("%s differs: %d %q", v, code, e.out.String())
+		}
+	}
+}
