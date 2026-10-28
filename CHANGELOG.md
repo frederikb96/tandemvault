@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
+### Fixed
+
+- The `.rpm` and Arch packages of a release are listed in `checksums.txt` and carry a build provenance attestation, like the `.deb` and the tarballs.
+
 ## [0.1.0] - 2026-10-28
 
 ### Added
@@ -19,5 +25,6 @@ All notable changes to this project are documented here. The format follows
 - One-time password secrets compared by secret and parameters across raw base32 and `otpauth://` forms.
 - Release packages for linux amd64 and arm64 (`.deb`, `.rpm`, Arch, tarball) with checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/frederikb96/tandemvault/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/frederikb96/tandemvault/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/frederikb96/tandemvault/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/frederikb96/tandemvault/releases/tag/v0.1.0
