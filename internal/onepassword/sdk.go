@@ -130,7 +130,7 @@ func (s *SDK) Find(ctx context.Context, query, vault string) ([]Candidate, error
 			all = append(all, Candidate{ID: it.ID, VaultID: v.ID, VaultTitle: v.Title, Title: it.Title})
 		}
 	}
-	return matchCandidates(all, query), nil
+	return MatchCandidates(all, query), nil
 }
 
 func (s *SDK) Update(ctx context.Context, vaultID, itemID string, expectVersion uint64, set map[Field]string) (Item, error) {

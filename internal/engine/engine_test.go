@@ -446,7 +446,7 @@ func TestLinkByTitle(t *testing.T) {
 		t.Fatal("ambiguous title resolved")
 	}
 	out := h.out.String()
-	if !strings.Contains(out, "several items match") || !strings.Contains(out, "no 1Password item titled") {
+	if !strings.Contains(out, "several items match") || !strings.Contains(out, "no 1Password item title matches") {
 		t.Fatalf("plan:\n%s", out)
 	}
 	if got, _ := h.get("sealed", "UNIQUE_USER"); got != val("u") {
@@ -617,5 +617,196 @@ func TestDecideTable(t *testing.T) {
 		if got := decide(onepassword.Password, c.op, c.v, c.firstSync); got.dir != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got.dir, c.want)
 		}
+	}
+}
+
+func (h *harness) lease(prefix, item string, fields ...onepassword.Field) {
+	h.addMapping(&mapping.Mapping{Vault: "sealed", Prefix: prefix, Item: item, OpVault: h.op.VaultID("Private"), Lease: true, Fields: fields})
+}
+
+func (h *harness) markUnlink(prefix, how string) {
+	h.t.Helper()
+	mf, _ := mapping.Load(h.cfg.Mappings)
+	m, err := mf.Find("sealed", prefix)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	m.Unlink = how
+	if err := mf.Save(h.cfg.Mappings); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *harness) gone(prefix string) {
+	h.t.Helper()
+	mf, _ := mapping.Load(h.cfg.Mappings)
+	if _, err := mf.Find("sealed", prefix); err == nil {
+		h.t.Fatalf("mapping %s still there", prefix)
+	}
+	st, _ := mapping.LoadState(h.cfg.State)
+	if st.Mappings["sealed/"+prefix] != nil {
+		h.t.Fatalf("state of %s still there", prefix)
+	}
+	names, _ := h.vault("sealed").Names()
+	for _, n := range names {
+		if strings.HasPrefix(n, prefix+"_") {
+			h.t.Fatalf("vault entry %s still there", n)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "sealed", ".trash")); err == nil {
+		h.t.Fatal("a trash copy was made")
+	}
+}
+
+func TestLeaseReturnUnchangedNeedsNeither1PasswordNorPassphrase(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Username: val("u"), onepassword.Password: val("p")})
+	h.lease("SHOP", id, onepassword.Username, onepassword.Password)
+	h.sync()
+	if got, _ := h.get("sealed", "SHOP_PASSWORD"); got != val("p") {
+		t.Fatal("lease did not pull")
+	}
+	if !strings.Contains(h.out.String(), "[sealed/SHOP, lease]") {
+		t.Fatalf("plan does not mark the lease:\n%s", h.out.String())
+	}
+	e := h.engine()
+	if got := e.Leases(); len(got) != 1 || got[0] != "sealed/SHOP" {
+		t.Fatalf("leases %v", got)
+	}
+	// A vault whose passphrase source fails proves nothing gets unlocked.
+	e.Vaults["sealed"], _ = vault.Open(h.cfg, "sealed", func(context.Context) (string, error) {
+		t.Fatal("passphrase asked")
+		return "", nil
+	})
+	e.OP = nil
+	m, _ := e.Mappings.Find("sealed", "SHOP")
+	done, err := e.ReturnUnchanged(context.Background(), m)
+	if err != nil || !done {
+		t.Fatalf("done %v err %v", done, err)
+	}
+	h.gone("SHOP")
+	if !h.op.Item(id).Deleted && h.op.Item(id).Values[onepassword.Password] != val("p") {
+		t.Fatal("1Password item changed")
+	}
+}
+
+func TestReturnWritesBackVerifiesAndDeletes(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Username: val("u"), onepassword.Password: val("old")})
+	h.lease("SHOP", id, onepassword.Username, onepassword.Password)
+	h.sync()
+	h.set("sealed", "SHOP_PASSWORD", val("rotated"))
+
+	e := h.engine()
+	m, _ := e.Mappings.Find("sealed", "SHOP")
+	if done, err := e.ReturnUnchanged(context.Background(), m); done || err != nil {
+		t.Fatalf("changed lease returned without a sync: %v %v", done, err)
+	}
+	h.markUnlink("SHOP", mapping.Return)
+	h.out.Reset()
+	p := h.sync()
+	if p.Changes() != 2 {
+		t.Fatalf("changes %d\n%s", p.Changes(), h.out.String())
+	}
+	if !strings.Contains(h.out.String(), "vault → 1Password") || !strings.Contains(h.out.String(), "deleted once 1Password is checked to hold them") {
+		t.Fatalf("plan:\n%s", h.out.String())
+	}
+	if h.op.Item(id).Values[onepassword.Password] != val("rotated") {
+		t.Fatal("not written back")
+	}
+	if strings.Contains(h.out.String(), "apply error") {
+		t.Fatalf("apply failed:\n%s", h.out.String())
+	}
+	h.gone("SHOP")
+}
+
+func TestReturnWhen1PasswordIsNewerKeepsVaultValueInHistory(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Password: val("base")})
+	h.lease("SHOP", id, onepassword.Password)
+	h.sync()
+	h.set("sealed", "SHOP_PASSWORD", val("vaultside"))
+	h.age("SHOP_PASSWORD", h.op.Now().Add(-time.Hour))
+	h.op.Edit(id, map[onepassword.Field]string{onepassword.Password: val("opside")})
+	h.markUnlink("SHOP", mapping.Return)
+	h.out.Reset()
+	h.sync()
+	it := h.op.Item(id)
+	if it.Values[onepassword.Password] != val("opside") || it.History[len(it.History)-1][onepassword.Password] != val("vaultside") {
+		t.Fatal("vault value not kept in history, or 1Password lost its value")
+	}
+	if !strings.Contains(h.out.String(), "vault value → 1Password history") {
+		t.Fatalf("plan:\n%s", h.out.String())
+	}
+	h.gone("SHOP")
+}
+
+func TestRetire(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "Old", map[onepassword.Field]string{onepassword.Username: val("u"), onepassword.Password: val("p")})
+	h.linked("OLD", id, onepassword.Username, onepassword.Password)
+	h.sync()
+	h.set("sealed", "OLD_PASSWORD", val("last"))
+	h.markUnlink("OLD", mapping.Retire)
+	h.out.Reset()
+	h.sync()
+	it := h.op.Item(id)
+	if !it.Deleted || it.Values[onepassword.Password] != val("last") {
+		t.Fatal("retire must write back the vault's value, then soft-delete the item")
+	}
+	if !strings.Contains(h.out.String(), "1Password item → Recently Deleted") {
+		t.Fatalf("plan:\n%s", h.out.String())
+	}
+	h.gone("OLD")
+}
+
+func TestReturnKeepsVaultWhenWriteDidNotLand(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Password: val("old")})
+	h.lease("SHOP", id, onepassword.Password)
+	h.sync()
+	h.set("sealed", "SHOP_PASSWORD", val("rotated"))
+	h.markUnlink("SHOP", mapping.Return)
+	h.op.DropWrites = true
+	h.out.Reset()
+	h.sync()
+	if !strings.Contains(h.out.String(), "does not hold the vault's value") {
+		t.Fatalf("output:\n%s", h.out.String())
+	}
+	if got, _ := h.get("sealed", "SHOP_PASSWORD"); got != val("rotated") {
+		t.Fatal("vault copy deleted although 1Password does not hold it")
+	}
+}
+
+func TestReturnRefusedWhenBackendCannotWrite(t *testing.T) {
+	h := newHarness(t, false)
+	h.op.KindName = config.BackendCLI
+	id := h.op.Add("Private", "Shop", map[onepassword.Field]string{onepassword.Password: val("old")})
+	h.lease("SHOP", id, onepassword.Password) // passkey unknown
+	h.sync()
+	h.set("sealed", "SHOP_PASSWORD", val("rotated"))
+	h.markUnlink("SHOP", mapping.Return)
+	h.out.Reset()
+	h.sync()
+	if h.op.Writes() != 0 || !strings.Contains(h.out.String(), "so the vault copy stays") {
+		t.Fatalf("writes %d\n%s", h.op.Writes(), h.out.String())
+	}
+	if got, _ := h.get("sealed", "SHOP_PASSWORD"); got != val("rotated") {
+		t.Fatal("vault copy deleted")
+	}
+}
+
+func TestLinkBestMatch(t *testing.T) {
+	h := newHarness(t, false)
+	id := h.op.Add("Private", "www.example-shop.com", map[onepassword.Field]string{onepassword.Username: val("u")})
+	h.addMapping(&mapping.Mapping{Vault: "sealed", Prefix: "SHOP", Title: "example-shop", Lease: true})
+	h.sync()
+	mf, _ := mapping.Load(h.cfg.Mappings)
+	m, _ := mf.Find("sealed", "SHOP")
+	if m.Item != id || m.Title != "www.example-shop.com" {
+		t.Fatalf("best match not linked: %+v", m)
+	}
+	if !strings.Contains(h.out.String(), `best match for "example-shop": title contains the search`) {
+		t.Fatalf("plan:\n%s", h.out.String())
 	}
 }

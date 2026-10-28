@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,8 @@ func (a *App) cmdVault(ctx context.Context, args []string) (int, error) {
 		return a.vaultGet(ctx, args)
 	case "set":
 		return a.vaultSet(ctx, args)
+	case "verify":
+		return a.vaultVerify(ctx, args)
 	case "unset":
 		return a.vaultUnset(ctx, args)
 	case "run":
@@ -219,6 +222,40 @@ func (a *App) vaultSet(ctx context.Context, args []string) (int, error) {
 	}
 	fmt.Fprintf(a.Stderr, "Set %s in vault %s.\n", pos[0], v.Name())
 	return exitOK, nil
+}
+
+func (a *App) vaultVerify(ctx context.Context, args []string) (int, error) {
+	fs := newFlagSet(a, "vault verify", "vault verify [--vault V] NAME < value")
+	vaultName := fs.String("vault", "", "vault to read")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return exitError, err
+	}
+	if len(pos) != 1 {
+		return exitError, errors.New("vault verify takes exactly one name; the value comes on stdin")
+	}
+	v, err := a.pickVault(*vaultName, false)
+	if err != nil {
+		return exitError, err
+	}
+	want, err := a.readValue(pos[0])
+	if err != nil {
+		return exitError, err
+	}
+	vals, err := v.Read(ctx, pos)
+	if err != nil {
+		return exitError, err
+	}
+	got, ok := vals[pos[0]]
+	switch {
+	case !ok:
+		return exitError, fmt.Errorf("%s is not in vault %s", pos[0], v.Name())
+	case subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1:
+		fmt.Fprintln(a.Stdout, "match")
+		return exitOK, nil
+	}
+	fmt.Fprintln(a.Stdout, "differs")
+	return exitPending, nil
 }
 
 func (a *App) vaultUnset(ctx context.Context, args []string) (int, error) {

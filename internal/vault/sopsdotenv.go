@@ -225,6 +225,28 @@ func (s *SopsDotenv) Trash(ctx context.Context, names []string, stamp string) er
 	})
 }
 
+func (s *SopsDotenv) Remove(ctx context.Context, names []string) error {
+	raw, err := rawLines(s.path)
+	if err != nil {
+		return err
+	}
+	return WithLock(LockPath(s.path), func() error {
+		for _, n := range names {
+			if err := ValidName(n); err != nil {
+				return err
+			}
+			if _, ok := raw[n]; !ok {
+				continue
+			}
+			if err := s.unset(ctx, n); err != nil {
+				return err
+			}
+			delete(s.cache, n)
+		}
+		return nil
+	})
+}
+
 // recipients reads the age recipients from the file's sops metadata.
 func (s *SopsDotenv) recipients() ([]string, error) {
 	f, err := os.Open(s.path)

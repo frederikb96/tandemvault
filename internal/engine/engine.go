@@ -39,6 +39,8 @@ const (
 	kindUnlinkKeepVault
 	kindUnlinkKeepOP
 	kindDropMapping
+	kindReturn
+	kindRetire
 )
 
 // Line is one row of the printed plan. It never holds a value.
@@ -70,6 +72,11 @@ type ItemPlan struct {
 	createVals  map[onepassword.Field]string
 	// skipped entry names keep their recorded fingerprint, so the change stays pending.
 	skipped map[string]bool
+	// expect holds, per field, the vault value 1Password must hold once the
+	// planned writes are done. Fields where 1Password's newer value wins are absent.
+	expect map[onepassword.Field]string
+	// remove lists the vault entries a return or retire deletes.
+	remove []string
 }
 
 // Changes counts the planned changes.
@@ -145,10 +152,14 @@ func label(m *mapping.Mapping, title string) string {
 	if title == "" {
 		title = m.Title
 	}
-	if title == "" {
-		return m.Key()
+	key := m.Key()
+	if m.Lease {
+		key += ", lease"
 	}
-	return title + " [" + m.Key() + "]"
+	if title == "" {
+		return "[" + key + "]"
+	}
+	return title + " [" + key + "]"
 }
 
 // Blockers lists file-sync conflict copies of anything the run reads or
@@ -205,6 +216,8 @@ func (e *Engine) planOne(ctx context.Context, ip *ItemPlan) error {
 	m := ip.M
 	v := e.Vaults[m.Vault]
 	switch {
+	case m.Unlink == mapping.Return || m.Unlink == mapping.Retire:
+		return e.planReturn(ctx, ip, v)
 	case m.Unlink != "":
 		return e.planUnlink(ctx, ip, v)
 	case m.Create:
@@ -218,17 +231,22 @@ func (e *Engine) planOne(ctx context.Context, ip *ItemPlan) error {
 		}
 		switch len(cands) {
 		case 0:
-			ip.Lines = append(ip.Lines, Line{Label: label(m, ""), What: "link", Action: fmt.Sprintf("skipped, no 1Password item titled %q", m.Title), Skip: true})
+			ip.Lines = append(ip.Lines, Line{Label: label(m, ""), What: "link", Action: fmt.Sprintf("skipped, no 1Password item title matches %q", m.Title), Skip: true})
 			return nil
 		case 1:
-			ip.itemID, ip.opVaultID, ip.link = cands[0].ID, cands[0].VaultID, true
-			ip.Lines = append(ip.Lines, Line{Label: label(m, cands[0].Title), What: "link", Action: fmt.Sprintf("→ %s (vault %s)", cands[0].ID, cands[0].VaultTitle)})
+			c := cands[0]
+			ip.itemID, ip.opVaultID, ip.link = c.ID, c.VaultID, true
+			line := Line{Label: label(m, c.Title), What: "link", Action: fmt.Sprintf("→ %s (vault %s)", c.ID, c.VaultTitle)}
+			if c.Match != onepassword.MatchID && c.Match != onepassword.MatchExact {
+				line.Reason = fmt.Sprintf("best match for %q: %s", m.Title, c.Match)
+			}
+			ip.Lines = append(ip.Lines, line)
 		default:
 			var ids []string
 			for _, c := range cands {
-				ids = append(ids, c.ID+" in "+c.VaultTitle)
+				ids = append(ids, fmt.Sprintf("%s %q in %s", c.ID, c.Title, c.VaultTitle))
 			}
-			ip.Lines = append(ip.Lines, Line{Label: label(m, ""), What: "link", Action: "skipped, several items match: " + strings.Join(ids, ", ") + "; link by item ID", Skip: true})
+			ip.Lines = append(ip.Lines, Line{Label: label(m, ""), What: "link", Action: "skipped, several items match (" + cands[0].Match + "): " + strings.Join(ids, ", ") + "; link by item ID", Skip: true})
 			return nil
 		}
 	}
@@ -270,6 +288,59 @@ func (e *Engine) planUnlink(ctx context.Context, ip *ItemPlan, v vault.Vault) er
 		}
 		ip.Lines = append(ip.Lines, Line{Label: label(m, ""), What: "break sync", Action: action})
 	}
+	return nil
+}
+
+// planReturn plans a return or a retire: the usual sync towards 1Password,
+// no vault writes, and the vault entries deleted once 1Password is checked
+// to hold their values.
+func (e *Engine) planReturn(ctx context.Context, ip *ItemPlan, v vault.Vault) error {
+	m := ip.M
+	ip.itemID, ip.opVaultID = m.Item, m.OpVault
+	if err := e.planSync(ctx, ip, v); err != nil {
+		return err
+	}
+	lbl := label(m, ip.item.Title)
+	if len(ip.skipped) > 0 || len(ip.vaultTrash) > 0 {
+		var names []string
+		for n := range ip.skipped {
+			names = append(names, n)
+		}
+		names = append(names, ip.vaultTrash...)
+		sort.Strings(names)
+		ip.kind, ip.opPre, ip.opWrites, ip.vaultWrites, ip.vaultTrash = kindNone, nil, nil, nil, nil
+		ip.Lines = append(ip.Lines, Line{Label: lbl, What: m.Unlink, Action: "skipped", Reason: "1Password cannot take the vault's value of " + strings.Join(names, ", ") + ", so the vault copy stays", Skip: true})
+		return nil
+	}
+	// The vault copy goes away, so nothing is written to it. A conflict that
+	// 1Password wins still puts the vault's value into the item's history.
+	ip.vaultWrites = nil
+	kept := ip.Lines[:0]
+	for _, l := range ip.Lines {
+		switch {
+		case l.Action == "1Password → vault" && strings.Contains(l.Reason, "1Password history"):
+			l.Action = "vault value → 1Password history"
+		case l.Action == "1Password → vault" || l.Action == "create from 1Password":
+			continue
+		}
+		kept = append(kept, l)
+	}
+	ip.Lines = kept
+	for _, n := range m.EntryNames() {
+		if ip.entries[n].Present {
+			ip.remove = append(ip.remove, n)
+		}
+	}
+	what := "vault " + strings.Join(ip.remove, ", ") + " deleted once 1Password is checked to hold them"
+	if len(ip.remove) == 0 {
+		what = "nothing in the vault to delete"
+	}
+	ip.kind = kindReturn
+	if m.Unlink == mapping.Retire {
+		ip.kind = kindRetire
+		what += "; 1Password item → Recently Deleted"
+	}
+	ip.Lines = append(ip.Lines, Line{Label: lbl, What: m.Unlink, Action: what})
 	return nil
 }
 
@@ -336,6 +407,7 @@ func (e *Engine) planSync(ctx context.Context, ip *ItemPlan, v vault.Vault) erro
 	lbl := label(m, item.Title)
 
 	ip.opPre, ip.opWrites, ip.vaultWrites = map[onepassword.Field]string{}, map[onepassword.Field]string{}, map[string]string{}
+	ip.expect = map[onepassword.Field]string{}
 	for _, f := range m.SyncedFields() {
 		name := m.NameFor(f)
 		if f == onepassword.OTP && item.OTPFields > 1 {
@@ -355,6 +427,9 @@ func (e *Engine) planSync(ctx context.Context, ip *ItemPlan, v vault.Vault) erro
 			side{value: opVal, present: opOK, moved: opMoved, time: item.UpdatedAt},
 			side{value: vVal, present: vOK, moved: vMoved, time: entry.ModTime},
 			firstSync)
+		if vOK && (d.dir == none || d.dir == toOnePassword) {
+			ip.expect[f] = vVal
+		}
 		if d.dir == none {
 			continue
 		}
@@ -494,7 +569,7 @@ func (e *Engine) applyOne(ctx context.Context, ip *ItemPlan) error {
 		return e.record(m, item, v, nil)
 	}
 
-	// kindSync: compare-and-swap against what the plan saw.
+	// kindSync, kindReturn, kindRetire: compare-and-swap against what the plan saw.
 	current, err := e.OP.Get(ctx, ip.opVaultID, ip.itemID)
 	if err != nil {
 		return err
@@ -522,6 +597,9 @@ func (e *Engine) applyOne(ctx context.Context, ip *ItemPlan) error {
 			return mismatch(err)
 		}
 	}
+	if ip.kind == kindReturn || ip.kind == kindRetire {
+		return e.finishReturn(ctx, ip, v)
+	}
 	if len(ip.vaultTrash) > 0 {
 		if err := v.Trash(ctx, ip.vaultTrash, e.stamp()); err != nil {
 			return err
@@ -533,6 +611,71 @@ func (e *Engine) applyOne(ctx context.Context, ip *ItemPlan) error {
 		}
 	}
 	return e.record(m, item, v, ip.skipped)
+}
+
+// ErrNotHeld means 1Password does not hold a vault value after the write-back,
+// so the vault copy was kept.
+var ErrNotHeld = errors.New("1Password does not hold the vault's value after the write-back; the vault copy is kept")
+
+// finishReturn reads the item back and checks that it holds every vault
+// value it should, then (for a retire) moves the item to Recently Deleted,
+// deletes the vault entries without a trash copy and ends the mapping.
+func (e *Engine) finishReturn(ctx context.Context, ip *ItemPlan, v vault.Vault) error {
+	m := ip.M
+	held, err := e.OP.Get(ctx, ip.opVaultID, ip.itemID)
+	if err != nil {
+		return err
+	}
+	for f, want := range ip.expect {
+		if !equalValues(f, held.Values[f], want) {
+			return fmt.Errorf("%s: %w", m.NameFor(f), ErrNotHeld)
+		}
+	}
+	if ip.kind == kindRetire {
+		if err := e.OP.Delete(ctx, ip.opVaultID, ip.itemID); err != nil {
+			return err
+		}
+	}
+	if err := v.Remove(ctx, ip.remove); err != nil {
+		return err
+	}
+	e.Mappings.Remove(m)
+	delete(e.State.Mappings, m.Key())
+	return e.save()
+}
+
+// ReturnUnchanged ends a mapping at once, without 1Password, when none of
+// its vault entries changed since the last sync: 1Password then holds every
+// value the vault has (or a newer one, with the vault's in its history), so
+// the vault copy is deleted without a trash copy. It reports false, and
+// changes nothing, when a sync is needed first.
+func (e *Engine) ReturnUnchanged(ctx context.Context, m *mapping.Mapping) (bool, error) {
+	st := e.State.Mappings[m.Key()]
+	if !m.Resolved() || m.Create || st == nil || st.Item != m.Item {
+		return false, nil
+	}
+	v := e.Vaults[m.Vault]
+	names := m.EntryNames()
+	entries, err := v.Entries(names)
+	if err != nil {
+		return false, err
+	}
+	var present []string
+	for _, n := range names {
+		prev, ok := st.Vault[n]
+		if !ok || prev != entries[n].Fingerprint {
+			return false, nil
+		}
+		if entries[n].Present {
+			present = append(present, n)
+		}
+	}
+	if err := v.Remove(ctx, present); err != nil {
+		return false, err
+	}
+	e.Mappings.Remove(m)
+	delete(e.State.Mappings, m.Key())
+	return true, e.save()
 }
 
 func mismatch(err error) error {

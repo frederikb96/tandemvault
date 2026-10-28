@@ -2,27 +2,43 @@ package onepassword
 
 import "strings"
 
-// matchCandidates picks the items whose ID equals query, else whose title
-// equals it exactly, else whose title equals it ignoring case.
-func matchCandidates(all []Candidate, query string) []Candidate {
-	var byID, exact, folded []Candidate
+// How a candidate matched the lookup.
+const (
+	MatchID      = "id"
+	MatchExact   = "exact title"
+	MatchFolded  = "title ignoring case"
+	MatchPartial = "title contains the search"
+)
+
+// MatchCandidates picks the items whose ID equals query, else whose title
+// equals it exactly, else ignoring case, else whose title contains it
+// ignoring case. Each returned candidate carries how it matched.
+func MatchCandidates(all []Candidate, query string) []Candidate {
+	tiers := map[string][]Candidate{}
+	q := strings.ToLower(query)
 	for _, c := range all {
+		var kind string
 		switch {
 		case c.ID == query:
-			byID = append(byID, c)
+			kind = MatchID
 		case c.Title == query:
-			exact = append(exact, c)
+			kind = MatchExact
 		case strings.EqualFold(c.Title, query):
-			folded = append(folded, c)
+			kind = MatchFolded
+		case q != "" && strings.Contains(strings.ToLower(c.Title), q):
+			kind = MatchPartial
+		default:
+			continue
+		}
+		c.Match = kind
+		tiers[kind] = append(tiers[kind], c)
+	}
+	for _, kind := range []string{MatchID, MatchExact, MatchFolded, MatchPartial} {
+		if len(tiers[kind]) > 0 {
+			return tiers[kind]
 		}
 	}
-	switch {
-	case len(byID) > 0:
-		return byID
-	case len(exact) > 0:
-		return exact
-	}
-	return folded
+	return nil
 }
 
 // vaultMatches reports whether ref (a vault ID, or empty for every vault) selects vault id.

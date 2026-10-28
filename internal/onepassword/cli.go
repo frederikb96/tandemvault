@@ -172,7 +172,7 @@ func (c *CLI) Find(ctx context.Context, query, vault string) ([]Candidate, error
 	for _, it := range list {
 		all = append(all, Candidate{ID: it.ID, VaultID: it.Vault.ID, VaultTitle: it.Vault.Name, Title: it.Title})
 	}
-	return matchCandidates(all, query), nil
+	return MatchCandidates(all, query), nil
 }
 
 func (c *CLI) Update(ctx context.Context, vaultID, itemID string, expectVersion uint64, set map[Field]string) (Item, error) {

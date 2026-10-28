@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
+### Added
+
+- Leases: `link --lease` pulls an item for one job, `return` gives it back. Unchanged entries are deleted at once without 1Password; changed ones are written back by the next sync, which checks 1Password holds them before it deletes the vault copy.
+- `unlink --keep none` retires an item: write back, check, 1Password item to Recently Deleted, vault entries deleted.
+- Link lookup falls back to titles containing the search; the plan names the chosen item and says when it was a best match.
+- `vault verify NAME` compares a value on stdin with an entry and prints only `match` or `differs`.
+- `status --local` lists leases not returned yet.
+
 ## [0.1.1] - 2026-10-28
 
 ### Fixed
@@ -25,6 +35,7 @@ All notable changes to this project are documented here. The format follows
 - One-time password secrets compared by secret and parameters across raw base32 and `otpauth://` forms.
 - Release packages for linux amd64 and arm64 (`.deb`, `.rpm`, Arch, tarball) with checksums and build provenance attestations.
 
-[Unreleased]: https://github.com/frederikb96/tandemvault/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/frederikb96/tandemvault/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/frederikb96/tandemvault/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/frederikb96/tandemvault/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/frederikb96/tandemvault/releases/tag/v0.1.0

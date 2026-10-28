@@ -36,15 +36,19 @@ Sync:
   sync [--dry-run]                     show the plan, ask, apply it
   status [--local] [--quiet]           what the next sync would do; --local needs neither
                                        1Password nor a key and sees vault-side changes only
-  link [flags] <title|item-id>         map a 1Password item to vault entries
+  link [flags] <title|item-id>         map a 1Password item to vault entries (--lease: for a while)
   link --create [flags] <title>        create a 1Password item from vault entries
-  unlink --keep op|vault|both <PREFIX> end a mapping; the other side's copy goes to its trash
+  return <PREFIX>...                   give leased entries back: deleted from the vault at once if
+                                       unchanged, else after the next sync wrote them back
+  unlink --keep op|vault|both|none <PREFIX>
+                                       end a mapping; none retires the item on both sides
   vaults                               list the 1Password vaults with their IDs
 
 Vaults:
   vault init   [--vault V] [--age-recipient R]...
   vault names  [--vault V]
   vault get    [--vault V] [--reveal] NAME
+  vault verify [--vault V] NAME        compare a value on stdin with the entry, print match or differs
   vault set    [--vault V] NAME        value on stdin, never as an argument
   vault unset  [--vault V] NAME        moves the entry to the vault's trash
   vault run    [--vault V] NAME... -- COMMAND [ARGS...]
@@ -161,6 +165,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		code, err = a.cmdLink(rest)
 	case "unlink":
 		code, err = a.cmdUnlink(rest)
+	case "return":
+		code, err = a.cmdReturn(ctx, rest)
 	case "vault":
 		code, err = a.cmdVault(ctx, rest)
 	case "vaults":

@@ -31,6 +31,12 @@ func (e *Engine) LocalStatus() ([]string, error) {
 		case m.Unlink == mapping.KeepOnePassword:
 			out = append(out, key+": break sync requested, keep 1Password")
 			continue
+		case m.Unlink == mapping.Return:
+			out = append(out, key+": return requested (write back, then delete the vault copy)")
+			continue
+		case m.Unlink == mapping.Retire:
+			out = append(out, key+": retire requested (write back, delete the vault copy, 1Password item to Recently Deleted)")
+			continue
 		case m.Create:
 			out = append(out, fmt.Sprintf("%s: create 1Password item %q requested", key, m.Title))
 			continue
@@ -55,4 +61,15 @@ func (e *Engine) LocalStatus() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// Leases lists the lease mappings not yet asked to return.
+func (e *Engine) Leases() []string {
+	var out []string
+	for _, m := range e.Mappings.Mappings {
+		if m.Lease && m.Unlink == "" {
+			out = append(out, m.Key())
+		}
+	}
+	return out
 }

@@ -68,7 +68,7 @@ tandemvault link "Example Shop" --vault sealed --prefix SHOP
 tandemvault link abcdefghijklmnopqrstuvwxyz --vault open --prefix FORUM --fields username,password
 ```
 
-A link names the 1Password item by title or by item ID. The next sync looks it up: exact title first, then ignoring case, limited to the vault with the ID given as `--op-vault`, if any. One match is linked and synced in the same run. Several matches are listed with their IDs and skipped; link by ID then.
+A link names the 1Password item by title or by item ID. The next sync looks it up, limited to the vault with the ID given as `--op-vault`, if any: by ID, else exact title, else title ignoring case, else titles containing the search ignoring case. The first of these that finds anything decides. One match is linked and synced in the same run; when it was not an exact match, the plan says so ("best match for …"), so you see which item was picked before you confirm. Several matches are listed with their IDs and titles and skipped; link by ID then.
 
 Entries missing in the vault are created from 1Password.
 
@@ -80,15 +80,41 @@ tandemvault link --create "New Forum" --op-vault zyxwvutsrqponmlkjihgfedcba --va
 
 The next sync creates a Login item titled "New Forum" from the vault entries `NEWFORUM_USER`, `NEWFORUM_PASSWORD`, `NEWFORUM_TOTP_SECRET` and `NEWFORUM_URL` (those that exist), and turns the request into a normal mapping.
 
+## Using an item for a while
+
+Sometimes a value is needed in the vault only for one job, for example to rotate a password, and should not stay there afterwards. That is a lease:
+
+```bash
+tandemvault link --lease "example shop" --vault sealed --prefix SHOP   # 1. request
+tandemvault sync                                                        # 2. pull (approval 1)
+# ... use SHOP_USER / SHOP_PASSWORD, or set a new SHOP_PASSWORD after changing it on the site ...
+tandemvault return SHOP                                                 # 3. give it back
+tandemvault sync                                                        # 4. write back and delete (approval 2)
+```
+
+`return` checks whether any of the mapping's vault entries changed since the last sync:
+
+- Unchanged: 1Password already holds every value the vault has, so the entries are deleted at once, without a trash copy, and the mapping ends. No sync, no 1Password, no passphrase. Reading a value for a while therefore costs one sync.
+- Changed: the mapping is marked, and the next sync writes the vault's values to 1Password like any sync, reads the item back, and checks that it holds each of them. Only then are the vault entries deleted (without a trash copy; 1Password's item history keeps every older value) and the mapping ends. If the check fails, the vault copy stays and the sync reports it. Changing a value for a while therefore costs two syncs.
+
+`status --local` lists leases that are not returned yet. `return` works on any mapping, not only leases: it is how a vault copy is dropped once 1Password is known to have it.
+
+If 1Password's own value changed in the meantime and is newer, 1Password keeps it and the vault's value goes into the item's history first, as in any conflict. A return the backend cannot carry out (the `cli` backend on an item not mapped with `passkey: false`) is skipped and the vault copy stays.
+
 ## Breaking a sync
 
 ```bash
 tandemvault unlink SHOP --keep vault   # 1Password item → Recently Deleted
 tandemvault unlink SHOP --keep op      # vault entries → vault trash
 tandemvault unlink SHOP --keep both    # stop syncing, change nothing
+tandemvault unlink SHOP --keep none    # retire: write back, then 1Password item → Recently Deleted, vault entries deleted
 ```
 
-`--keep vault` and `--keep op` mark the mapping; the next sync shows it in the plan, carries it out and removes the mapping. `--keep both` removes the mapping right away. Nothing is deleted for good: 1Password keeps deleted items in Recently Deleted, and a vault keeps removed entries in its trash ([vaults.md](vaults.md#trash)).
+`--keep vault`, `--keep op` and `--keep none` mark the mapping; the next sync shows it in the plan, carries it out and removes the mapping. `--keep both` removes the mapping right away.
+
+`--keep none` is for an account that is gone: the sync first writes the vault's values back and checks 1Password holds them, like a return, then moves the item to Recently Deleted and deletes the vault entries without a trash copy, since the deleted item holds them.
+
+Nothing is lost for good: 1Password keeps deleted items in Recently Deleted, a vault keeps entries removed by `--keep op` or `vault unset` in its trash ([vaults.md](vaults.md#trash)), and entries deleted by a return or a retire were first checked to be in 1Password.
 
 ## Status without 1Password
 
@@ -96,7 +122,7 @@ tandemvault unlink SHOP --keep both    # stop syncing, change nothing
 tandemvault status --local
 ```
 
-Needs neither 1Password nor a key. It lists pending links, create and unlink requests, vault entries whose ciphertext changed since the last sync, and conflict copies, and exits with 1 when anything is pending. Changes made in 1Password only show in a full `status` or `sync`. `--quiet` prints nothing and only sets the exit code.
+Needs neither 1Password nor a key. It lists pending links, create, return and unlink requests, leases not returned yet, vault entries whose ciphertext changed since the last sync, and conflict copies, and exits with 1 when anything is pending. Changes made in 1Password only show in a full `status` or `sync`. `--quiet` prints nothing and only sets the exit code.
 
 ## Exit codes
 

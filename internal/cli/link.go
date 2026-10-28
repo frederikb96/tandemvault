@@ -50,6 +50,7 @@ func (a *App) cmdLink(args []string) (int, error) {
 	noPasskey := fs.Bool("no-passkey", false, "the 1Password item holds no passkey (lets the cli backend edit it)")
 	opVault := fs.String("op-vault", "", "ID of the 1Password vault to search in or create the item in (tandemvault vaults lists them)")
 	create := fs.Bool("create", false, "create the 1Password item from the vault entries")
+	lease := fs.Bool("lease", false, "pull the item only for a while; give it back with tandemvault return")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return exitError, err
@@ -69,7 +70,10 @@ func (a *App) cmdLink(args []string) (int, error) {
 	if err != nil {
 		return exitError, err
 	}
-	m := &mapping.Mapping{Vault: vn, Prefix: *prefix, OpVault: *opVault}
+	m := &mapping.Mapping{Vault: vn, Prefix: *prefix, OpVault: *opVault, Lease: *lease}
+	if *lease && *create {
+		return exitError, errors.New("--lease pulls an existing item; it does not go with --create")
+	}
 	switch {
 	case *create:
 		if passkey.set || *noPasskey {
@@ -140,7 +144,7 @@ func (a *App) cmdLink(args []string) (int, error) {
 func (a *App) cmdUnlink(args []string) (int, error) {
 	fs := newFlagSet(a, "unlink", "unlink --keep op|vault|both [--vault V] <PREFIX>")
 	vaultName := fs.String("vault", "", "vault holding the entries, when the prefix exists in several")
-	keep := fs.String("keep", "", "op: keep 1Password, vault copy to trash; vault: keep the vault, 1Password item to Recently Deleted; both: only stop syncing")
+	keep := fs.String("keep", "", "op: keep 1Password, vault copy to trash; vault: keep the vault, 1Password item to Recently Deleted; both: only stop syncing; none: retire, write back, then 1Password item to Recently Deleted and vault copy deleted")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return exitError, err
@@ -162,6 +166,12 @@ func (a *App) cmdUnlink(args []string) (int, error) {
 		return exitError, err
 	}
 	switch *keep {
+	case "none":
+		if !m.Resolved() {
+			return exitError, fmt.Errorf("%s is not linked to a 1Password item yet; use --keep both to drop the mapping", m.Key())
+		}
+		m.Unlink = mapping.Retire
+		fmt.Fprintf(a.Stdout, "Marked %s to retire on the next tandemvault sync.\n", m.Key())
 	case mapping.KeepOnePassword, mapping.KeepVault:
 		if m.Create {
 			mf.Remove(m)
@@ -182,12 +192,57 @@ func (a *App) cmdUnlink(args []string) (int, error) {
 		}
 		fmt.Fprintf(a.Stdout, "Removed %s; both sides keep their copy.\n", m.Key())
 	default:
-		return exitError, errors.New("--keep must be op, vault or both")
+		return exitError, errors.New("--keep must be op, vault, both or none")
 	}
 	if err := mf.Save(c.Mappings); err != nil {
 		return exitError, err
 	}
 	return exitOK, nil
+}
+
+func (a *App) cmdReturn(ctx context.Context, args []string) (int, error) {
+	fs := newFlagSet(a, "return", "return [--vault V] <PREFIX>...")
+	vaultName := fs.String("vault", "", "vault holding the entries, when a prefix exists in several")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return exitError, err
+	}
+	if len(pos) == 0 {
+		fs.Usage()
+		return exitError, errors.New("return takes one or more prefixes")
+	}
+	e, err := a.localEngine()
+	if err != nil {
+		return exitError, err
+	}
+	code := exitOK
+	for _, prefix := range pos {
+		m, err := e.Mappings.Find(*vaultName, prefix)
+		if err != nil {
+			return exitError, err
+		}
+		switch {
+		case m.Create || !m.Resolved():
+			e.Mappings.Remove(m)
+			fmt.Fprintf(a.Stdout, "%s was never linked; dropped the mapping, vault entries untouched.\n", m.Key())
+			continue
+		}
+		done, err := e.ReturnUnchanged(ctx, m)
+		if err != nil {
+			return exitError, err
+		}
+		if done {
+			fmt.Fprintf(a.Stdout, "Returned %s: unchanged since the last sync, vault copy deleted.\n", m.Key())
+			continue
+		}
+		m.Unlink = mapping.Return
+		code = exitPending
+		fmt.Fprintf(a.Stdout, "Marked %s to return: the next tandemvault sync writes the vault's changes back, checks 1Password holds them, then deletes the vault copy.\n", m.Key())
+	}
+	if err := e.Mappings.Save(e.Config.Mappings); err != nil {
+		return exitError, err
+	}
+	return code, nil
 }
 
 func (a *App) cmdVaults(ctx context.Context, args []string) (int, error) {
