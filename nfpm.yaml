@@ -1,0 +1,31 @@
+name: tandemvault
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Frederik Berg <fberg@posteo.de>
+description: Keeps selected 1Password items in step with SOPS/age vaults.
+homepage: https://github.com/frederikb96/tandemvault
+license: MIT
+overrides:
+  deb:
+    depends:
+      - libc6
+  rpm:
+    depends:
+      - glibc
+  archlinux:
+    depends:
+      - glibc
+contents:
+  - src: build/tandemvault
+    dst: /usr/bin/tandemvault
+    file_info:
+      mode: 0755
+  - src: LICENSE
+    dst: /usr/share/doc/tandemvault/copyright
+    file_info:
+      mode: 0644
+archlinux:
+  packager: Frederik Berg <fberg@posteo.de>
